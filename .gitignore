@@ -5,3 +5,4 @@ __pycache__/         # 파이썬 캐시 무시
 venv/                # 가상환경 폴더 (필요 시)
 *.pdf
 *.csv
+*.xlsx
