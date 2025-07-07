@@ -22,8 +22,7 @@
 <code>
 FinalProject/
 ├── Datas/ # 데이터 파일 위치 (비공개)
-├── Notebooks/ # 분석 및 모델링 노트북
-├── module/ # 사용자 정의 인코더 등 유틸리티 코드
+├── Codes/ # 분석 및 모델링 노트북
 └── README.md
 </code>
 
