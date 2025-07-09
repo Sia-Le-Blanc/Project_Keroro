@@ -11,3 +11,4 @@ venv/                # 가상환경 폴더 (필요 시)
 *.jpg
 *.png
 *.gif
+*.jpeg
