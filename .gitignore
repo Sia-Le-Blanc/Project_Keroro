@@ -12,3 +12,4 @@ venv/                # 가상환경 폴더 (필요 시)
 *.png
 *.gif
 *.jpeg
+Codes/day3/images/
