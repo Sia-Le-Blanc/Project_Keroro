@@ -1,8 +1,15 @@
 .ipynb_checkpoints/  # 자동 저장 임시 파일은 무시
 __pycache__/         # 파이썬 캐시 무시
 *.pyc
-.DS_Store            # macOS 임시 파일
+*/.DS_Store            # macOS 임시 파일
 venv/                # 가상환경 폴더 (필요 시)
 *.pdf
 *.csv
 *.xlsx
+117.금융 합성데이터/
+
+*.jpg
+*.png
+*.gif
+*.jpeg
+Codes/day3/images/
