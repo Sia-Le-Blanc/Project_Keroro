@@ -1,4 +1,7 @@
 import sys
+import json
+import os
+from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, 
     QLineEdit, QPushButton, QFrame, QMessageBox, QDesktopWidget, 
@@ -44,9 +47,16 @@ class VacancyPredictorWindow(QWidget):
         # 입력 필드들을 저장할 딕셔너리
         self.inputs = {}
         
+        # 예측 로그 파일 경로
+        self.log_file = "vacancy_prediction_log.json"
+        
+        # 프로젝트 기록 콤보박스
+        self.project_history_combo = None
+        
         self.init_ui()
         self.center_window()
         self.setup_shortcuts()
+        self.load_project_history()
     
     def init_ui(self):
         # 메인 레이아웃
@@ -187,10 +197,27 @@ class VacancyPredictorWindow(QWidget):
         
         header.setLayout(main_layout)
         
-        # 헤더 드래그 이벤트
-        header.mousePressEvent = self.header_mouse_press_event
-        header.mouseMoveEvent = self.header_mouse_move_event
-        header.mouseReleaseEvent = self.header_mouse_release_event
+        # 헤더에서 드래그 가능하도록 설정 (올바른 방식)
+        def header_mouse_press(event):
+            if event.button() == Qt.LeftButton and not self.is_fullscreen:
+                self.dragging = True
+                self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
+                event.accept()
+        
+        def header_mouse_move(event):
+            if event.buttons() == Qt.LeftButton and self.dragging and not self.is_fullscreen:
+                new_pos = event.globalPos() - self.drag_position
+                self.move(new_pos)
+                event.accept()
+        
+        def header_mouse_release(event):
+            if event.button() == Qt.LeftButton:
+                self.dragging = False
+                event.accept()
+        
+        header.mousePressEvent = header_mouse_press
+        header.mouseMoveEvent = header_mouse_move
+        header.mouseReleaseEvent = header_mouse_release
         
         return header
     
@@ -233,8 +260,59 @@ class VacancyPredictorWindow(QWidget):
             }
         """)
         
+        # 이전 기록 영역
+        history_layout = QHBoxLayout()
+        history_layout.setSpacing(15)
+        
+        # 이전 기록 라벨
+        history_label = QLabel("📋 이전 기록:")
+        history_label.setFont(QFont("Malgun Gothic", 11))
+        history_label.setStyleSheet("color: #7f8c8d;")
+        
+        # 이전 기록 콤보박스
+        self.project_history_combo = QComboBox()
+        self.project_history_combo.setFixedHeight(40)
+        self.project_history_combo.setStyleSheet("""
+            QComboBox {
+                border: 1px solid #b8daff;
+                border-radius: 6px;
+                padding: 8px 12px;
+                font-size: 11px;
+                color: #2c3e50;
+                background-color: white;
+                min-width: 250px;
+                font-weight: bold;
+            }
+            QComboBox:hover {
+                border: 1px solid #007bff;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 25px;
+                border-left-width: 1px;
+                border-left-color: #b8daff;
+                border-left-style: solid;
+                border-top-right-radius: 6px;
+                border-bottom-right-radius: 6px;
+                background-color: #f8f9ff;
+            }
+            QComboBox QAbstractItemView {
+                border: 1px solid #b8daff;
+                color: #2c3e50;
+                background-color: white;
+                selection-background-color: #007bff;
+                selection-color: white;
+            }
+        """)
+        self.project_history_combo.currentTextChanged.connect(self.on_project_selected)
+        
+        history_layout.addWidget(history_label)
+        history_layout.addWidget(self.project_history_combo, 1)
+        
         layout.addWidget(project_label)
         layout.addWidget(self.project_input)
+        layout.addLayout(history_layout)
         section.setLayout(layout)
         
         return section
@@ -246,7 +324,9 @@ class VacancyPredictorWindow(QWidget):
         layout.setSpacing(15)
         
         # 시군구 선택
-        layout.addWidget(QLabel("시군구:"), 0, 0)
+        label = QLabel("시군구:")
+        label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+        layout.addWidget(label, 0, 0)
         self.inputs['district'] = QComboBox()
         self.inputs['district'].addItems([
             "강남구", "강동구", "강북구", "강서구", "관악구", "광진구", "구로구", "금천구",
@@ -259,19 +339,25 @@ class VacancyPredictorWindow(QWidget):
         layout.addWidget(self.inputs['district'], 0, 1)
         
         # 역세권 (500m 이내)
-        layout.addWidget(QLabel("역세권 (500m 이내):"), 0, 2)
+        label = QLabel("역세권 (500m 이내):")
+        label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+        layout.addWidget(label, 0, 2)
         self.inputs['subway_nearby'] = QCheckBox("지하철역 있음")
         self.inputs['subway_nearby'].setStyleSheet(self.get_checkbox_style())
         layout.addWidget(self.inputs['subway_nearby'], 0, 3)
         
         # 버스정류장 유무
-        layout.addWidget(QLabel("버스정류장:"), 1, 0)
+        label = QLabel("버스정류장:")
+        label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+        layout.addWidget(label, 1, 0)
         self.inputs['bus_stop'] = QCheckBox("버스정류장 있음")
         self.inputs['bus_stop'].setStyleSheet(self.get_checkbox_style())
         layout.addWidget(self.inputs['bus_stop'], 1, 1)
         
         # 접면도로 수
-        layout.addWidget(QLabel("접면도로 수:"), 1, 2)
+        label = QLabel("접면도로 수:")
+        label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+        layout.addWidget(label, 1, 2)
         self.inputs['road_count'] = QLineEdit()
         self.inputs['road_count'].setPlaceholderText("개")
         self.inputs['road_count'].setValidator(QIntValidator(1, 10))
@@ -288,8 +374,10 @@ class VacancyPredictorWindow(QWidget):
         layout = QGridLayout()
         layout.setSpacing(15)
         
-        # 부대시설 수
-        layout.addWidget(QLabel("부대시설 수:"), 0, 0)
+        # 단지 내 편의시설 수
+        label = QLabel("단지 내 편의시설 수:")
+        label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+        layout.addWidget(label, 0, 0)
         self.inputs['facilities_count'] = QLineEdit()
         self.inputs['facilities_count'].setPlaceholderText("개")
         self.inputs['facilities_count'].setValidator(QIntValidator(0, 50))
@@ -298,13 +386,17 @@ class VacancyPredictorWindow(QWidget):
         layout.addWidget(self.inputs['facilities_count'], 0, 1)
         
         # 공원 유무
-        layout.addWidget(QLabel("공원 (500m 이내):"), 0, 2)
+        label = QLabel("공원 (500m 이내):")
+        label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+        layout.addWidget(label, 0, 2)
         self.inputs['park_nearby'] = QCheckBox("공원 있음")
         self.inputs['park_nearby'].setStyleSheet(self.get_checkbox_style())
         layout.addWidget(self.inputs['park_nearby'], 0, 3)
         
         # 평균 분양면적
-        layout.addWidget(QLabel("평균 분양면적:"), 1, 0)
+        label = QLabel("평균 분양면적:")
+        label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+        layout.addWidget(label, 1, 0)
         self.inputs['avg_area'] = QLineEdit()
         self.inputs['avg_area'].setPlaceholderText("평")
         self.inputs['avg_area'].setValidator(QDoubleValidator(10.0, 200.0, 1))
@@ -313,7 +405,9 @@ class VacancyPredictorWindow(QWidget):
         layout.addWidget(self.inputs['avg_area'], 1, 1)
         
         # 평균 분양단가
-        layout.addWidget(QLabel("평균 분양단가:"), 1, 2)
+        label = QLabel("평균 분양단가:")
+        label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+        layout.addWidget(label, 1, 2)
         self.inputs['avg_price_per_area'] = QLineEdit()
         self.inputs['avg_price_per_area'].setPlaceholderText("만원/평")
         self.inputs['avg_price_per_area'].setValidator(QDoubleValidator(1000.0, 20000.0, 0))
@@ -338,7 +432,9 @@ class VacancyPredictorWindow(QWidget):
         ]
         
         for i, (name, key) in enumerate(schools):
-            layout.addWidget(QLabel(f"{name} (500m 이내):"), 0, i*2)
+            label = QLabel(f"{name} (500m 이내):")
+            label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+            layout.addWidget(label, 0, i*2)
             self.inputs[key] = QCheckBox(f"{name} 있음")
             self.inputs[key].setStyleSheet(self.get_checkbox_style())
             layout.addWidget(self.inputs[key], 0, i*2+1)
@@ -353,7 +449,9 @@ class VacancyPredictorWindow(QWidget):
         layout.setSpacing(15)
         
         # 병원 유무
-        layout.addWidget(QLabel("병원 (500m 이내):"), 0, 0)
+        label = QLabel("병원 (500m 이내):")
+        label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+        layout.addWidget(label, 0, 0)
         self.inputs['hospital_nearby'] = QCheckBox("병원 있음")
         self.inputs['hospital_nearby'].setStyleSheet(self.get_checkbox_style())
         layout.addWidget(self.inputs['hospital_nearby'], 0, 1)
@@ -368,7 +466,9 @@ class VacancyPredictorWindow(QWidget):
         layout.setSpacing(15)
         
         # 해당시점 금리
-        layout.addWidget(QLabel("해당시점 금리:"), 0, 0)
+        label = QLabel("해당시점 금리:")
+        label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+        layout.addWidget(label, 0, 0)
         self.inputs['interest_rate'] = QLineEdit()
         self.inputs['interest_rate'].setPlaceholderText("% (예: 3.5)")
         self.inputs['interest_rate'].setValidator(QDoubleValidator(0.0, 20.0, 2))
@@ -377,7 +477,9 @@ class VacancyPredictorWindow(QWidget):
         layout.addWidget(self.inputs['interest_rate'], 0, 1)
         
         # 해당시점 환율
-        layout.addWidget(QLabel("해당시점 환율:"), 0, 2)
+        label = QLabel("해당시점 환율:")
+        label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+        layout.addWidget(label, 0, 2)
         self.inputs['exchange_rate'] = QLineEdit()
         self.inputs['exchange_rate'].setPlaceholderText("원 (예: 1350)")
         self.inputs['exchange_rate'].setValidator(QDoubleValidator(1000.0, 2000.0, 0))
@@ -395,7 +497,9 @@ class VacancyPredictorWindow(QWidget):
         layout.setSpacing(15)
         
         # 주변시세 평균
-        layout.addWidget(QLabel("주변시세 평균:"), 0, 0)
+        label = QLabel("주변시세 평균:")
+        label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+        layout.addWidget(label, 0, 0)
         self.inputs['nearby_avg_price'] = QLineEdit()
         self.inputs['nearby_avg_price'].setPlaceholderText("만원/평")
         self.inputs['nearby_avg_price'].setValidator(QDoubleValidator(1000.0, 20000.0, 0))
@@ -418,6 +522,7 @@ class VacancyPredictorWindow(QWidget):
                 margin-top: 12px;
                 padding-top: 12px;
                 background-color: white;
+                color: #2c3e50;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
@@ -442,6 +547,28 @@ class VacancyPredictorWindow(QWidget):
         """)
         
         button_layout = QHBoxLayout()
+        
+        # 이전 결과 불러오기 버튼
+        load_btn = QPushButton("📂 이전 결과 불러오기")
+        load_btn.setFixedHeight(50)
+        load_btn.setFont(QFont("Malgun Gothic", 11, QFont.Bold))
+        load_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f39c12;
+                color: white;
+                border: none;
+                border-radius: 25px;
+                padding: 15px 25px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #e67e22;
+            }
+            QPushButton:pressed {
+                background-color: #d35400;
+            }
+        """)
+        load_btn.clicked.connect(self.load_previous_result)
         
         # 초기화 버튼
         clear_btn = QPushButton("🔄 초기화")
@@ -482,6 +609,7 @@ class VacancyPredictorWindow(QWidget):
         """)
         predict_btn.clicked.connect(self.predict_vacancy)
         
+        button_layout.addWidget(load_btn)
         button_layout.addWidget(clear_btn)
         button_layout.addStretch()
         button_layout.addWidget(predict_btn)
@@ -504,6 +632,7 @@ class VacancyPredictorWindow(QWidget):
             QLineEdit:focus {
                 border: 2px solid #007bff;
                 background-color: #f8f9ff;
+                color: #2c3e50;
             }
         """
     
@@ -518,9 +647,28 @@ class VacancyPredictorWindow(QWidget):
                 color: #2c3e50;
                 background-color: white;
                 min-width: 120px;
+                font-weight: bold;
             }
             QComboBox:focus {
                 border: 2px solid #007bff;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 25px;
+                border-left-width: 1px;
+                border-left-color: #b8daff;
+                border-left-style: solid;
+                border-top-right-radius: 6px;
+                border-bottom-right-radius: 6px;
+                background-color: #f8f9ff;
+            }
+            QComboBox QAbstractItemView {
+                border: 1px solid #b8daff;
+                color: #2c3e50;
+                background-color: white;
+                selection-background-color: #007bff;
+                selection-color: white;
             }
         """
     
@@ -531,6 +679,7 @@ class VacancyPredictorWindow(QWidget):
                 font-size: 12px;
                 color: #2c3e50;
                 spacing: 8px;
+                font-weight: bold;
             }
             QCheckBox::indicator {
                 width: 18px;
@@ -601,7 +750,7 @@ class VacancyPredictorWindow(QWidget):
 
 📝 입력 항목:
 • 위치 정보: 시군구, 역세권, 버스정류장, 접면도로 수
-• 건물 정보: 부대시설, 공원, 분양면적, 분양단가
+• 건물 정보: 단지 내 편의시설, 공원, 분양면적, 분양단가
 • 교육 시설: 초중고등학교 유무
 • 생활 편의: 병원 유무
 • 경제 지표: 금리, 환율
@@ -613,6 +762,12 @@ class VacancyPredictorWindow(QWidget):
 • Ctrl+Shift+C: 모든 입력 초기화
 • Esc: 전체화면 종료
 
+💾 로그 기능:
+• 프로젝트별로 예측 결과가 자동 저장됩니다
+• 최대 10개까지 기록이 보관됩니다
+• 콤보박스에서 이전 기록을 선택할 수 있습니다
+• 📂 버튼으로 이전 예측 결과를 불러올 수 있습니다
+
 💡 분양률 예측 기준:
 • 75% 이상: 매우 안정적
 • 60-75%: 안정적
@@ -622,11 +777,131 @@ class VacancyPredictorWindow(QWidget):
         
         self.show_message_box("🎯 도움말", help_text.strip(), QMessageBox.Information, "#007bff")
     
-    def header_mouse_press_event(self, event):
-        """헤더 마우스 이벤트"""
-        if event.button() == Qt.LeftButton and not self.is_fullscreen:
-            self.dragging = True
-            self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
+    def load_project_history(self):
+        """프로젝트 기록 로드"""
+        if self.project_history_combo is None:
+            return
+            
+        self.project_history_combo.clear()
+        self.project_history_combo.addItem("-- 프로젝트 선택 --")
+        
+        if os.path.exists(self.log_file):
+            try:
+                with open(self.log_file, 'r', encoding='utf-8') as f:
+                    logs = json.load(f)
+                
+                projects = list(logs.keys())
+                projects.sort()
+                
+                for project in projects:
+                    last_prediction = logs[project][-1]  # 최신 기록
+                    date_str = last_prediction['timestamp'][:10]  # YYYY-MM-DD
+                    rate = last_prediction['prediction_result']['vacancy_rate']
+                    grade = last_prediction['prediction_result']['grade']
+                    self.project_history_combo.addItem(f"{project} ({date_str}, {rate:.1f}%, {grade})")
+                    
+            except Exception as e:
+                print(f"프로젝트 기록 로드 오류: {e}")
+    
+    def on_project_selected(self, project_text):
+        """프로젝트 선택 시 프로젝트명 자동 입력"""
+        if project_text and project_text != "-- 프로젝트 선택 --":
+            project_name = project_text.split(" (")[0]  # 괄호 앞부분만 추출
+            self.project_input.setText(project_name)
+    
+    def load_previous_result(self):
+        """이전 결과 불러오기"""
+        project_name = self.project_input.text().strip()
+        
+        if not project_name:
+            self.show_message_box("알림", "프로젝트명을 입력해주세요.", QMessageBox.Information, "#f39c12")
+            return
+        
+        if not os.path.exists(self.log_file):
+            self.show_message_box("알림", f"'{project_name}'의 이전 기록이 없습니다.", QMessageBox.Information, "#f39c12")
+            return
+        
+        try:
+            with open(self.log_file, 'r', encoding='utf-8') as f:
+                logs = json.load(f)
+            
+            if project_name not in logs:
+                self.show_message_box("알림", f"'{project_name}'의 이전 기록이 없습니다.", QMessageBox.Information, "#f39c12")
+                return
+            
+            # 최신 기록 가져오기
+            latest_record = logs[project_name][-1]
+            input_data = latest_record['input_data']
+            prediction_result = latest_record['prediction_result']
+            
+            # 입력 필드에 데이터 복원
+            for key, value in input_data.items():
+                if key in self.inputs:
+                    widget = self.inputs[key]
+                    if isinstance(widget, QLineEdit):
+                        widget.setText(str(value))
+                    elif isinstance(widget, QCheckBox):
+                        widget.setChecked(bool(value))
+                    elif isinstance(widget, QComboBox):
+                        # 시군구 복원
+                        index = widget.findText(str(value))
+                        if index >= 0:
+                            widget.setCurrentIndex(index)
+            
+            # 예측 결과 창 열기
+            if RESULT_WINDOW_AVAILABLE:
+                try:
+                    self.result_window = VacancyResultWindow(prediction_result, input_data, project_name)
+                    self.result_window.setWindowTitle(f"📊 {project_name} - 부동산 분양률 예측 결과 (저장된 기록)")
+                    self.result_window.show()
+                    
+                    self.show_message_box("완료", f"'{project_name}'의 이전 기록을 불러왔습니다.", QMessageBox.Information, "#28a745")
+                    
+                except Exception as e:
+                    print(f"예측 결과 창 열기 오류: {e}")
+                    self.show_simple_result(project_name, prediction_result['vacancy_rate'], 
+                                          prediction_result['grade'], prediction_result['status'])
+            else:
+                self.show_simple_result(project_name, prediction_result['vacancy_rate'], 
+                                      prediction_result['grade'], prediction_result['status'])
+                
+        except Exception as e:
+            self.show_message_box("오류", f"기록 불러오기 중 오류가 발생했습니다:\n{str(e)}", QMessageBox.Critical, "#dc3545")
+    
+    def save_prediction_log(self, project_name, input_data, prediction_result):
+        """예측 결과 로그 저장"""
+        try:
+            # 기존 로그 불러오기
+            logs = {}
+            if os.path.exists(self.log_file):
+                with open(self.log_file, 'r', encoding='utf-8') as f:
+                    logs = json.load(f)
+            
+            # 새 기록 추가
+            if project_name not in logs:
+                logs[project_name] = []
+            
+            new_record = {
+                'timestamp': datetime.now().isoformat(),
+                'input_data': input_data,
+                'prediction_result': prediction_result
+            }
+            
+            logs[project_name].append(new_record)
+            
+            # 프로젝트별 최대 10개 기록만 보관
+            if len(logs[project_name]) > 10:
+                logs[project_name] = logs[project_name][-10:]
+            
+            # 파일에 저장
+            with open(self.log_file, 'w', encoding='utf-8') as f:
+                json.dump(logs, f, ensure_ascii=False, indent=2)
+            
+            # 콤보박스 업데이트
+            self.load_project_history()
+            
+        except Exception as e:
+            print(f"예측 로그 저장 오류: {e}")
     
     def header_mouse_move_event(self, event):
         """헤더 마우스 이동"""
@@ -702,6 +977,9 @@ class VacancyPredictorWindow(QWidget):
             # 검색 기록에 추가
             self.prediction_completed.emit("부동산", project_name, f"분양률: {vacancy_rate:.1f}%")
             
+            # 로그 저장
+            self.save_prediction_log(project_name, input_data, prediction_data)
+            
             # 예측 결과 창 열기
             if RESULT_WINDOW_AVAILABLE:
                 try:
@@ -751,21 +1029,43 @@ class VacancyPredictorWindow(QWidget):
     
     def validate_input_data(self, input_data):
         """입력 데이터 검증"""
-        required_fields = [
-            ('road_count', '접면도로 수'),
-            ('facilities_count', '부대시설 수'),
+        # 0이 허용되지 않는 필드들 (반드시 양수여야 하는 필드)
+        required_positive_fields = [
             ('avg_area', '평균 분양면적'),
             ('avg_price_per_area', '평균 분양단가'),
-            ('interest_rate', '해당시점 금리'),
             ('exchange_rate', '해당시점 환율'),
             ('nearby_avg_price', '주변시세 평균')
         ]
         
-        for key, name in required_fields:
-            if input_data[key] == 0.0:
-                self.show_error(f"'{name}' 값을 입력해주세요.")
+        # 0이 허용되는 필드들 (0 이상이면 되는 필드)
+        required_non_negative_fields = [
+            ('road_count', '접면도로 수'),
+            ('facilities_count', '단지 내 편의시설 수'),
+            ('interest_rate', '해당시점 금리')
+        ]
+        
+        # 양수여야 하는 필드 검증
+        for key, name in required_positive_fields:
+            if input_data[key] <= 0.0:
+                if input_data[key] == 0.0:
+                    self.show_error(f"'{name}' 값은 0보다 큰 값을 입력해주세요.")
+                else:
+                    self.show_error(f"'{name}' 값을 입력해주세요.")
                 if key in self.inputs:
                     self.inputs[key].setFocus()
+                return False
+        
+        # 0 이상이어야 하는 필드 검증 (입력이 비어있는지만 확인)
+        for key, name in required_non_negative_fields:
+            # 입력 필드가 비어있는지 확인 (실제 입력값으로 확인)
+            if self.inputs[key].text().strip() == '':
+                self.show_error(f"'{name}' 값을 입력해주세요.")
+                self.inputs[key].setFocus()
+                return False
+            # 음수 값 검증
+            elif input_data[key] < 0.0:
+                self.show_error(f"'{name}' 값은 0 이상의 값을 입력해주세요.")
+                self.inputs[key].setFocus()
                 return False
         
         return True
