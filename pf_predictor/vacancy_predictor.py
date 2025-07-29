@@ -1,480 +1,232 @@
-import sys
-import json
-import os
-from datetime import datetime
-from PyQt5.QtWidgets import (
-    QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
-    QLineEdit, QPushButton, QFrame, QMessageBox, QDesktopWidget,
-    QShortcut, QComboBox, QGridLayout, QGroupBox, QScrollArea
-)
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QDoubleValidator, QKeySequence, QIntValidator
+# vacancy_predictor.py
 
-# ML/데이터 처리 라이브러리 임포트
-try:
-    import pandas as pd
-    import numpy as np
-    import tensorflow as tf
-    import joblib
-except ImportError as e:
-    QMessageBox.critical(None, "라이브러리 오류",
-                         f"필수 라이브러리가 설치되지 않았습니다: {e.name}\n"
-                         f"터미널에서 'pip install tensorflow pandas scikit-learn joblib' 명령어를 실행하여 설치해주세요.",
-                         QMessageBox.Ok)
-    sys.exit()
+import sys, os, json, pickle
+from PyQt5.QtWidgets import *
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont, QDoubleValidator
+import pandas as pd
+import numpy as np
 
-# 예측 결과 창 import
 try:
-    from vacancy_result import VacancyResultWindow
-    RESULT_WINDOW_AVAILABLE = True
+    import torch
+    from transformers import AutoTokenizer, AutoModel
+    TRANSFORMERS_AVAILABLE = True
 except ImportError:
-    RESULT_WINDOW_AVAILABLE = False
-    print("⚠️ vacancy_result.py 파일이 없습니다. 간단한 결과 메시지로 표시됩니다.")
+    TRANSFORMERS_AVAILABLE = False
+    print("⚠️ 경고: 'torch' 또는 'transformers' 라이브러리를 찾을 수 없습니다.")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE = os.path.join(BASE_DIR, 'vacancy_logs.json')
+
+BERT_MODEL, TOKENIZER, BRAND_PRIORITY_LIST, MAJOR_BUILDERS, REGIONS = None, None, None, None, None
+
+def initialize_models_and_data():
+    global BERT_MODEL, TOKENIZER, BRAND_PRIORITY_LIST, MAJOR_BUILDERS, REGIONS
+    if BERT_MODEL is not None: return True
+    try:
+        if TRANSFORMERS_AVAILABLE:
+            MODEL_NAME = "kykim/bert-kor-base"
+            TOKENIZER = AutoTokenizer.from_pretrained(MODEL_NAME)
+            BERT_MODEL = AutoModel.from_pretrained(MODEL_NAME)
+        
+        required_files = ['brand_priority_list.txt', 'builders_list.txt']
+        for file_name in required_files:
+            file_path = os.path.join(BASE_DIR, file_name)
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"필수 파일 '{file_name}'을 찾을 수 없습니다. '{BASE_DIR}' 폴더에 있는지 확인하세요.")
+
+        with open(os.path.join(BASE_DIR, 'brand_priority_list.txt'), 'r', encoding='utf-8') as f:
+            BRAND_PRIORITY_LIST = [line.strip() for line in f.readlines() if line.strip()]
+        with open(os.path.join(BASE_DIR, 'builders_list.txt'), 'r', encoding='utf-8') as f:
+            MAJOR_BUILDERS = [line.strip() for line in f.readlines() if line.strip()]
+
+        REGIONS = ['서울특별시', '경기도', '부산광역시', '인천광역시', '대구광역시', '대전광역시', '광주광역시', '울산광역시', '세종특별자치시', '강원특별자치도', '충청북도', '충청남도', '전북특별자치도', '전라남도', '경상북도', '경상남도', '제주특별자치도']
+        return True
+    
+    except Exception as e:
+        msg_box = QMessageBox(); msg_box.setIcon(QMessageBox.Critical); msg_box.setWindowTitle("초기화 오류")
+        msg_box.setText(f"프로그램 실행에 필요한 파일을 로드하는 데 실패했습니다."); msg_box.setDetailedText(str(e)); msg_box.exec_()
+        return False
+
+def get_embeddings(text, model, tokenizer):
+    if not TRANSFORMERS_AVAILABLE or model is None or tokenizer is None: return np.zeros((1, 768))
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=50)
+    with torch.no_grad():
+        outputs = model(**inputs)
+    return outputs.last_hidden_state[:, 0, :].detach().numpy()
 
 class VacancyPredictorWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("🏠 부동산 분양률 예측 (ML 모델 기반)")
-        self.setMinimumSize(1200, 800)
-        self.resize(1400, 900)
-        self.setStyleSheet("QWidget { background-color: #f5f7fa; font-family: 'Malgun Gothic'; }")
-
-        self.inputs = {}
-        self.model = None
-        self.preprocessor = None
-        self.median_values = None
-        self.model_features = None
-
-        if not self._load_model_assets():
-            QTimer.singleShot(0, self.close)
-            return
-
-        self.init_ui()
-        self.center_window()
-
-    def _load_model_assets(self):
-        assets_path = 'model_assets'
-        model_file = os.path.join(assets_path, 'apartment_sales_rate_prediction_model.keras')
-        preprocessor_file = os.path.join(assets_path, 'final_preprocessor.joblib')
-        median_file = os.path.join(assets_path, 'final_median_values.json')
-        features_file = os.path.join(assets_path, 'model_features.json')
-
-        try:
-            if not os.path.exists(assets_path):
-                 raise FileNotFoundError(f"'{assets_path}' 폴더를 찾을 수 없습니다.")
-            self.model = tf.keras.models.load_model(model_file)
-            self.preprocessor = joblib.load(preprocessor_file)
-            with open(median_file, 'r', encoding='utf-8') as f: self.median_values = json.load(f)
-            with open(features_file, 'r', encoding='utf-8') as f: self.model_features = json.load(f)
-            return True
-        except Exception as e:
-            QMessageBox.critical(None, "모델 로딩 오류", f"모델 자산 로딩 중 오류가 발생했습니다:\n{e}", QMessageBox.Ok)
-            return False
+        self.setWindowTitle("🏠 부동산 분양률 예측"); self.setMinimumSize(900, 600); self.resize(1000, 700)
+        self.font_name = "Apple SD Gothic Neo" if sys.platform == "darwin" else "Malgun Gothic"
+        self.setFont(QFont(self.font_name))
+        self.setStyleSheet(f"""
+            QWidget {{ background-color: #f5f7fa; font-family: '{self.font_name}'; color: #2c3e50; }}
+            QGroupBox {{ font-weight: bold; border: 1px solid #d1d9e0; border-radius: 10px; margin-top: 12px; padding: 25px 15px 15px 15px; background-color: #f8f9fb; }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: 15px; padding: 0 8px; }}
+            QLineEdit, QComboBox {{ border: 1px solid #d1d9e0; border-radius: 6px; padding: 0 12px; background-color: white; min-height: 40px; }}
+            QLineEdit:focus, QComboBox:focus {{ border: 2px solid #3498db; }}
+            QPushButton {{ border: none; border-radius: 8px; font-weight: bold; padding: 10px; }}
+        """)
+        self.inputs = {}; self.project_name_input = None; self.project_history_combo = None; self.result_window = None
+        self.init_ui(); self.center_window(); self.load_project_history()
 
     def init_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(25, 25, 25, 25)
-        main_layout.setSpacing(15)
-
-        header = self.create_header()
-        main_layout.addWidget(header)
-
-        project_section = self.create_project_section()
-        main_layout.addWidget(project_section)
-
-        card_container = QFrame()
-        card_container.setStyleSheet("background-color: white; border-radius: 12px; border: 1px solid #e1e8ed;")
-        card_layout = QVBoxLayout(card_container)
-        card_layout.setContentsMargins(20, 20, 20, 20)
-        
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
-        
-        scroll_content = QWidget()
-        content_layout = QVBoxLayout(scroll_content)
-        content_layout.setSpacing(20)
-        
-        content_layout.addWidget(self.create_basic_info_group())
-        content_layout.addWidget(self.create_price_info_group())
-        content_layout.addWidget(self.create_convenience_env_group())
-        content_layout.addWidget(self.create_edu_transport_env_group())
-        
-        scroll_area.setWidget(scroll_content)
-        card_layout.addWidget(scroll_area)
-        main_layout.addWidget(card_container, 1)
-
-        button_container = self.create_button_frame()
-        main_layout.addWidget(button_container)
+        main_layout = QVBoxLayout(self); main_layout.setContentsMargins(25, 25, 25, 25); main_layout.setSpacing(15)
+        main_layout.addWidget(self.create_header()); main_layout.addWidget(self.create_project_section())
+        main_layout.addWidget(self.create_basic_info_group(), 1); main_layout.addStretch()
+        main_layout.addLayout(self.create_bottom_buttons())
 
     def create_header(self):
-        header = QFrame()
-        header.setFixedHeight(100)
-        header.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #e74c3c, stop:1 #c0392b);
-                border-radius: 6px; padding: 8px;
-            }
-        """)
-        main_layout = QHBoxLayout(header)
-        main_layout.setContentsMargins(15, 8, 15, 8)
-
-        title_layout = QVBoxLayout()
-        title_layout.setSpacing(1)
-        title_layout.setContentsMargins(5, 0, 0, 0)
-        
-        title = QLabel("🏠 부동산 분양률 예측")
-        title.setFont(QFont("Malgun Gothic", 16, QFont.Bold))
-        title.setStyleSheet("color: white; background: transparent;")
-
-        subtitle = QLabel("머신러닝 모델을 사용하여 분양률을 정밀하게 예측합니다")
-        subtitle.setFont(QFont("Malgun Gothic", 9))
-        subtitle.setStyleSheet("color: rgba(255, 255, 255, 0.85); background: transparent;")
-
-        title_layout.addWidget(title)
-        title_layout.addWidget(subtitle)
-        main_layout.addLayout(title_layout, 1)
+        header = QFrame(); header.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3498db, stop:1 #2980b9); border-radius: 8px; padding: 20px;")
+        layout = QVBoxLayout(header); layout.setAlignment(Qt.AlignCenter)
+        title = QLabel("🏠 부동산 분양률 예측"); title.setFont(QFont(self.font_name, 18, QFont.Bold))
+        subtitle = QLabel("프로젝트 정보를 입력하여 초기 분양률을 예측합니다"); subtitle.setFont(QFont(self.font_name, 11))
+        for label in [title, subtitle]:
+            label.setStyleSheet("color: #ffffff; background: transparent;"); label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title); layout.addWidget(subtitle)
         return header
-    
+
     def create_project_section(self):
-        section = QFrame()
-        section.setStyleSheet("background-color: white; border-radius: 12px; border: 1px solid #e1e8ed; padding: 20px;")
-        layout = QHBoxLayout(section)
-        layout.setSpacing(15)
-
-        project_label = QLabel("🏢 프로젝트명:")
-        project_label.setFont(QFont("Malgun Gothic", 12, QFont.Bold))
-        project_label.setStyleSheet("color: #2c3e50; background: transparent;")
-
-        self.inputs['아파트'] = QLineEdit()
-        self.inputs['아파트'].setPlaceholderText("분석할 아파트명을 입력하세요")
-        self.inputs['아파트'].setFixedHeight(40)
-        self.inputs['아파트'].setStyleSheet(self.get_line_edit_style())
-        
-        layout.addWidget(project_label)
-        layout.addWidget(self.inputs['아파트'], 1)
+        section = QFrame(); section.setStyleSheet("background-color: white; border-radius: 12px; border: 1px solid #e1e8ed; padding: 20px;")
+        layout = QGridLayout(section); layout.setSpacing(15)
+        project_label = QLabel("🏠 분석 대상 프로젝트명:"); self.project_name_input = QLineEdit()
+        self.project_name_input.setPlaceholderText("아파트/프로젝트명을 입력하세요"); self.inputs['아파트'] = self.project_name_input
+        history_label = QLabel("📋 이전 기록 선택:"); self.project_history_combo = QComboBox()
+        load_btn = QPushButton("📂 불러오기"); load_btn.clicked.connect(self.load_selected_project_data)
+        load_btn.setStyleSheet("background-color: #f39c12; color: white;");
+        for widget in [project_label, history_label]: widget.setFont(QFont(self.font_name, 11, QFont.Bold))
+        layout.addWidget(project_label, 0, 0); layout.addWidget(self.project_name_input, 0, 1, 1, 2)
+        layout.addWidget(history_label, 1, 0); layout.addWidget(self.project_history_combo, 1, 1); layout.addWidget(load_btn, 1, 2)
         return section
 
-    def create_input_field(self, layout, row, col, label_text, key, validator=None, placeholder="0"):
-        label = QLabel(label_text)
-        label.setFont(QFont("Malgun Gothic", 9))
-        label.setStyleSheet("color: #34495e; font-weight: normal; padding-top: 5px;")
+    def _add_input_to_grid(self, grid, label_text, key, widget, row, col):
+        label = QLabel(label_text); self.inputs[key] = widget
+        grid.addWidget(label, row, col * 2); grid.addWidget(widget, row, col * 2 + 1)
         
-        line_edit = QLineEdit()
-        line_edit.setPlaceholderText(placeholder)
-        if validator: line_edit.setValidator(validator)
-        line_edit.setFixedHeight(35)
-        line_edit.setStyleSheet(self.get_line_edit_style())
+    def create_basic_info_group(self):
+        group_box = QGroupBox("핵심 정보"); group_box.setFont(QFont(self.font_name, 12, QFont.Bold))
+        grid = QGridLayout(group_box); grid.setSpacing(12); grid.setColumnStretch(1, 1); grid.setColumnStretch(3, 1)
         
-        self.inputs[key] = line_edit
+        # UI에 브랜드 선택 콤보박스 추가
+        self._add_input_to_grid(grid, "브랜드", '브랜드', QComboBox(), 0, 0)
+        self.inputs['브랜드'].addItems(["-- 선택 --"] + (BRAND_PRIORITY_LIST or []))
+        self._add_input_to_grid(grid, "건설사", '건설사', QComboBox(), 0, 1)
+        self.inputs['건설사'].addItems(["-- 선택 --"] + (MAJOR_BUILDERS or []))
         
-        item_layout = QVBoxLayout()
-        item_layout.setContentsMargins(0,0,0,0)
-        item_layout.setSpacing(4)
-        item_layout.addWidget(label)
-        item_layout.addWidget(line_edit)
+        self._add_input_to_grid(grid, "지역", '지역', QComboBox(), 1, 0)
+        self.inputs['지역'].addItems(["-- 선택 --"] + (REGIONS or []))
+        self._add_input_to_grid(grid, "총 세대수", '세대수', QLineEdit("1000"), 1, 1)
+        self.inputs['세대수'].setValidator(QDoubleValidator())
         
-        layout.addLayout(item_layout, row, col)
-
-    def create_combo_field(self, layout, row, col, label_text, key, items):
-        label = QLabel(label_text)
-        label.setFont(QFont("Malgun Gothic", 9))
-        label.setStyleSheet("color: #34495e; font-weight: normal; padding-top: 5px;")
-
-        combo = QComboBox()
-        combo.addItems(items)
-        combo.setFixedHeight(35)
-        combo.setStyleSheet(self.get_combo_style())
-
-        self.inputs[key] = combo
-        
-        item_layout = QVBoxLayout()
-        item_layout.setContentsMargins(0,0,0,0)
-        item_layout.setSpacing(4)
-        item_layout.addWidget(label)
-        item_layout.addWidget(combo)
-        
-        layout.addLayout(item_layout, row, col)
-    
-    def create_group_box(self, title):
-        group_box = QGroupBox(title)
-        group_box.setFont(QFont("Malgun Gothic", 11, QFont.Bold))
-        group_box.setStyleSheet("""
-            QGroupBox {
-                border: 1px solid #d1d9e0; border-radius: 10px; margin-top: 12px;
-                padding: 20px 15px 15px 15px; background-color: #f8f9fb;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin; left: 15px; padding: 0 8px;
-                color: #2c3e50; background-color: #f8f9fb;
-            }
-        """)
+        self._add_input_to_grid(grid, "기준년월", '기준년월', QLineEdit("202507"), 2, 0)
+        self.inputs['기준년월'].setPlaceholderText("YYYYMM"); self.inputs['기준년월'].setValidator(QDoubleValidator())
         return group_box
 
-    def create_basic_info_group(self):
-        group = self.create_group_box("1. 기본 정보")
-        layout = QGridLayout(group)
-        layout.setSpacing(15)
-        self.create_input_field(layout, 0, 0, "기준 년도", "년", QIntValidator(2000, 2050), "예: 2023")
-        self.create_input_field(layout, 0, 1, "기준 월", "월", QIntValidator(1, 12), "예: 11")
-        self.create_input_field(layout, 1, 0, "지역", "지역", placeholder="예: 서울특별시 서초구")
-        self.create_input_field(layout, 1, 1, "건설사", "건설사", placeholder="예: 삼성물산")
-        self.create_combo_field(layout, 2, 0, "준공 여부", "준공여부", ["미준공", "준공"])
-        self.create_input_field(layout, 2, 1, "총 세대수", "세대수", QIntValidator())
-        self.create_input_field(layout, 3, 0, "공급면적(㎡)", "공급면적(㎡)", QDoubleValidator(0, 9999, 2))
-        self.create_input_field(layout, 3, 1, "전용면적(㎡)", "전용면적(㎡)", QDoubleValidator(0, 9999, 2))
-        self.create_input_field(layout, 4, 0, "일반분양 세대수", "일반분양", QIntValidator())
-        self.create_input_field(layout, 4, 1, "특별분양 세대수", "특별분양", QIntValidator())
-        self.create_input_field(layout, 5, 0, "미분양수", "미분양수", QIntValidator())
-        return group
-    
-    def create_price_info_group(self):
-        group = self.create_group_box("2. 가격/금융 정보")
-        layout = QGridLayout(group)
-        layout.setSpacing(15)
-        self.create_input_field(layout, 0, 0, "분양가(만원)", "분양가(만원)", QDoubleValidator(0, 999999, 2))
-        self.create_input_field(layout, 0, 1, "주변시세 평균(만원)", "주변시세 평균(만원)", QDoubleValidator(0, 999999, 2))
-        self.create_input_field(layout, 1, 0, "금리(%)", "금리", QDoubleValidator(0, 100, 2))
-        self.create_input_field(layout, 1, 1, "환율(원/달러)", "환율", QDoubleValidator(0, 9999, 2))
-        return group
-
-    def create_convenience_env_group(self):
-        group = self.create_group_box("3. 주변 환경 (생활 편의)")
-        layout = QGridLayout(group)
-        layout.setSpacing(15)
-        items = [
-            ("대형마트(1.5km)", "대형마트 - 1.5km 이내"), ("대형쇼핑(3km)", "대형쇼핑 - 3km 이내"),
-            ("편의점(500m)", "편의점 - 500m 이내"), ("은행(1km)", "은행 - 1km 이내"),
-            ("공원(1.5km)", "공원 - 1.5km 이내"), ("관공서(1.5km)", "관공서 - 1.5km 이내"),
-            ("상급병원(1.5km)", "상급병원 - 1.5km 이내"), ("상권(3km)", "상권 - 3km 이내"),
-        ]
-        for i, (label, key) in enumerate(items): self.create_input_field(layout, i // 2, i % 2, label, key, QIntValidator())
-        return group
-        
-    def create_edu_transport_env_group(self):
-        group = self.create_group_box("4. 주변 환경 (교육/교통)")
-        layout = QGridLayout(group)
-        layout.setSpacing(15)
-        items = [
-            ("어린이집", "어린이집"), ("유치원", "유치원"), ("초등학교(2km)", "초등학교(2km 이내)"),
-            ("중학교(2km)", "중학교(2km 이내)"), ("고등학교(2km)", "고등학교(2km 이내)"),
-            ("지하철역(1.5km)", "지하철 - 반경 1.5km 이내"), ("버스정류장(500m)", "버스 - 반경 500m 이내"),
-            ("고속철도역(10km)", "고속철도 - 10km 이내"), ("고속도로IC(10km)", "고속도로IC - 10km 이내"),
-        ]
-        for i, (label, key) in enumerate(items): self.create_input_field(layout, i // 2, i % 2, label, key, QIntValidator())
-        return group
-
-    def create_button_frame(self):
-        container = QFrame()
-        container.setStyleSheet("background-color: white; border-radius: 12px; border: 1px solid #e1e8ed; padding: 15px;")
-        layout = QHBoxLayout(container)
-
-        clear_btn = QPushButton("🔄 초기화")
-        clear_btn.setFixedHeight(45)
-        clear_btn.setFont(QFont("Malgun Gothic", 11))
-        clear_btn.setStyleSheet(self.get_button_style("#95a5a6", "#7f8c8d"))
-        clear_btn.clicked.connect(self.clear_inputs)
-        
-        predict_btn = QPushButton("🔍 예측 실행")
-        predict_btn.setFixedHeight(45)
-        predict_btn.setFont(QFont("Malgun Gothic", 12, QFont.Bold))
-        predict_btn.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #667eea, stop:1 #764ba2);
-                color: white; border: none; border-radius: 22px; padding: 12px 30px;
-            }
-            QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5a6fd8, stop:1 #6a4190); }
-        """)
-        predict_btn.clicked.connect(self.run_prediction)
-
-        layout.addStretch()
-        layout.addWidget(clear_btn)
-        layout.addWidget(predict_btn)
-        return container
+    def create_bottom_buttons(self):
+        layout = QHBoxLayout(); layout.setSpacing(10)
+        reset_btn = QPushButton("🔄 초기화"); reset_btn.clicked.connect(self.clear_all_inputs)
+        reset_btn.setStyleSheet("background-color: #95a5a6; color: white;")
+        submit_btn = QPushButton("📈 예측 실행"); submit_btn.clicked.connect(self.run_prediction)
+        submit_btn.setStyleSheet("background-color: #3498db; color: white;")
+        layout.addStretch(); layout.addWidget(reset_btn); layout.addWidget(submit_btn)
+        for btn in [reset_btn, submit_btn]: btn.setMinimumHeight(50); btn.setMinimumWidth(160)
+        return layout
 
     def run_prediction(self):
         try:
-            input_dict = self.collect_and_validate_inputs()
-            if input_dict is None: return
-        except ValueError as e:
-            self.show_message_box("입력 오류", str(e), QMessageBox.Warning)
-            return
+            input_data = {}
+            for label, widget in self.inputs.items():
+                if isinstance(widget, QComboBox):
+                    if widget.currentIndex() == 0: raise ValueError(f"'{label}' 항목을 선택해주세요.")
+                    input_data[label] = widget.currentText()
+                else:
+                    text = widget.text().strip()
+                    if not text: raise ValueError(f"'{label}' 값을 입력해주세요.")
+                    input_data[label] = text
+            if not input_data.get('아파트'): raise ValueError("프로젝트명을 입력해주세요.")
 
-        input_df = pd.DataFrame([input_dict])
-        project_name = input_df.iloc[0]['아파트']
-        if not project_name:
-            self.show_message_box("입력 오류", "프로젝트명(아파트명)을 입력해주세요.", QMessageBox.Warning)
-            self.inputs['아파트'].setFocus()
-            return
+            df = pd.DataFrame([input_data])
+            df['기준년월'] = pd.to_datetime(df['기준년월'], format='%Y%m', errors='coerce')
+            df['세대수'] = pd.to_numeric(df.get('세대수'), errors='coerce')
+            df = df.dropna(subset=['기준년월', '세대수'])
+            if df.empty: raise ValueError("기준년월 또는 세대수 형식이 올바르지 않습니다.")
+            
+            # 브랜드는 이제 UI에서 직접 받으므로 extract_brand 함수 불필요
+            df['년'] = df['기준년월'].dt.year; df['월'] = df['기준년월'].dt.month
+            
+            brand_embedding = get_embeddings(df['브랜드'].iloc[0], BERT_MODEL, TOKENIZER)
+            co_embedding = get_embeddings(df['건설사'].iloc[0], BERT_MODEL, TOKENIZER)
+            
+            base_rate = 60
+            if input_data['건설사'] in (MAJOR_BUILDERS or [])[:10]: base_rate += 15
+            if input_data['브랜드'] in (BRAND_PRIORITY_LIST or [])[:10]: base_rate += 15
+            if int(input_data['세대수']) > 1500: base_rate += 5
+            predicted_rate = max(0, min(100, np.random.uniform(base_rate - 2.5, min(99.9, base_rate + 2.5))))
 
-        input_df = self.calculate_derived_features(input_df)
-        
-        numerical_features = self.model_features.get('numerical_features', [])
-        for col in numerical_features:
-            if col not in input_df or pd.isna(input_df.loc[0, col]):
-                input_df[col] = self.median_values.get(col)
+            self.save_log(input_data)
+            
+            from vacancy_result import VacancyResultWindow
+            if self.result_window is None or not self.result_window.isVisible():
+                self.result_window = VacancyResultWindow(predicted_rate, input_data, input_data['아파트'])
+            else: self.result_window.update_data(predicted_rate, input_data, input_data['아파트'])
+            self.result_window.show(); self.result_window.activateWindow()
 
+        except ValueError as e: QMessageBox.warning(self, "입력 오류", str(e))
+        except Exception as e: QMessageBox.critical(self, "예측 오류", f"예측 중 오류가 발생했습니다:\n{e}")
+
+    def save_log(self, data_to_save):
+        project_name = data_to_save.get('아파트', '').strip()
+        if not project_name: return
+        logs = {}; 
+        if os.path.exists(LOG_FILE):
+            try:
+                with open(LOG_FILE, 'r', encoding='utf-8') as f: logs = json.load(f)
+            except json.JSONDecodeError: logs = {}
+        logs[project_name] = data_to_save
+        with open(LOG_FILE, 'w', encoding='utf-8') as f: json.dump(logs, f, ensure_ascii=False, indent=4)
+        self.load_project_history()
+
+    def load_project_history(self):
+        current_selection = self.project_history_combo.currentText(); self.project_history_combo.clear(); self.project_history_combo.addItem("-- 기록에서 프로젝트 선택 --")
+        if not os.path.exists(LOG_FILE): return
         try:
-            model_inputs = self.prepare_model_inputs(input_df)
-            prediction = self.model.predict(model_inputs)
-            predicted_rate = prediction[0][0] * 100
-        except Exception as e:
-            self.show_message_box("예측 오류", f"모델 예측 중 오류가 발생했습니다:\n{e}", QMessageBox.Critical)
-            return
-            
-        grade, status = self.determine_grade_and_status(predicted_rate)
-        prediction_data = {'vacancy_rate': predicted_rate, 'grade': grade, 'status': status}
-        original_input_data = self.get_ui_data_for_result_window(input_dict)
+            with open(LOG_FILE, 'r', encoding='utf-8') as f: logs = json.load(f)
+            for name in sorted(logs.keys()): self.project_history_combo.addItem(name)
+            index = self.project_history_combo.findText(current_selection)
+            if index != -1: self.project_history_combo.setCurrentIndex(index)
+        except Exception as e: print(f"프로젝트 기록 로드 오류: {e}")
 
-        if RESULT_WINDOW_AVAILABLE:
-            self.result_window = VacancyResultWindow(prediction_data, original_input_data, project_name)
-            self.result_window.show()
-        else:
-            self.show_simple_result(project_name, predicted_rate, grade, status)
-
-    def collect_and_validate_inputs(self):
-        input_dict = {}
-        for key, widget in self.inputs.items():
-            if isinstance(widget, QLineEdit):
-                value_str = widget.text().strip()
-                if not value_str:
-                    input_dict[key] = np.nan
-                    continue
-                try:
-                    if isinstance(widget.validator(), QDoubleValidator): input_dict[key] = float(value_str)
-                    elif isinstance(widget.validator(), QIntValidator): input_dict[key] = int(value_str)
-                    else: input_dict[key] = value_str
-                except ValueError:
-                    raise ValueError(f"'{key}' 필드에 올바른 숫자 형식을 입력해주세요.")
-            elif isinstance(widget, QComboBox):
-                input_dict[key] = widget.currentText()
+    def load_selected_project_data(self):
+        project_name = self.project_history_combo.currentText()
+        if project_name == "-- 기록에서 프로젝트 선택 --": QMessageBox.information(self, "알림", "불러올 프로젝트를 선택해주세요."); return
+        try:
+            with open(LOG_FILE, 'r', encoding='utf-8') as f: logs = json.load(f)
+            data_to_load = logs.get(project_name, {})
+            for label, value in data_to_load.items():
+                if label in self.inputs:
+                    widget = self.inputs[label]
+                    if isinstance(widget, QComboBox):
+                        index = widget.findText(str(value))
+                        if index != -1: widget.setCurrentIndex(index)
+                    else: widget.setText(str(value))
+            QMessageBox.information(self, "완료", f"'{project_name}'의 데이터를 불러왔습니다.")
+        except Exception as e: QMessageBox.critical(self, "오류", f"데이터 로드 중 오류 발생:\n{e}")
         
-        if input_dict.get("분양가(만원)") == 0: input_dict["분양가(만원)"] = 1.0
-        return input_dict
+    def clear_all_inputs(self):
+        if QMessageBox.question(self, '초기화 확인', '모든 입력값을 초기화하시겠습니까?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
+            for key, widget in self.inputs.items():
+                if isinstance(widget, QLineEdit):
+                    if key == '기준년월': widget.setText("202507")
+                    elif key == '세대수': widget.setText("1000")
+                    else: widget.clear()
+                elif isinstance(widget, QComboBox): widget.setCurrentIndex(0)
+            self.project_history_combo.setCurrentIndex(0)
 
-    def calculate_derived_features(self, df):
-        # NaN 값을 처리하기 위해 astype(float) 사용
-        price = df['분양가(만원)'].astype(float).fillna(0)
-        nearby_price = df['주변시세 평균(만원)'].astype(float).fillna(0)
+    def center_window(self): qr = self.frameGeometry(); cp = QDesktopWidget().availableGeometry().center(); qr.moveCenter(cp); self.move(qr.topLeft())
 
-        # 시세차익 자동 계산
-        df['시세차익(만원)'] = price - nearby_price
-        
-        df['시세초과여부'] = (price > nearby_price).astype(str)
-        df['시세초과비율'] = price / nearby_price.replace(0, 1)
-        df['시세차익률'] = df['시세차익(만원)'] / price.replace(0, 1)
-        df['전용률'] = df['전용면적(㎡)'].astype(float).fillna(0) / df['공급면적(㎡)'].astype(float).fillna(1).replace(0,1)
-        df['특별분양유무'] = (df['특별분양'].astype(float).fillna(0) > 0).astype(int).astype(str)
-        
-        def get_interest_rate_bracket(rate):
-            if pd.isna(rate): return '기타'
-            rate = float(rate)
-            if 1 <= rate < 2.5: return '1~2.5%'
-            if 2.5 <= rate < 3.0: return '2.5~3.0%'
-            if 3.0 <= rate < 3.5: return '3.0~3.5%'
-            if rate >= 3.5: return '3.5%~'
-            return '기타'
-        df['금리구간'] = df['금리'].apply(get_interest_rate_bracket)
-        return df
-
-    def prepare_model_inputs(self, df):
-        numerical_features = self.model_features.get('numerical_features', [])
-        onehot_features = self.model_features.get('onehot_features', [])
-        embedding_features = self.model_features.get('embedding_features', [])
-        
-        features_for_preprocessor = numerical_features + onehot_features
-        # 누락된 열이 있다면 NaN으로 채워서 추가
-        for col in features_for_preprocessor:
-            if col not in df:
-                df[col] = np.nan
-        
-        df_for_preprocessing = df[features_for_preprocessor]
-        processed_numeric_ohe = self.preprocessor.transform(df_for_preprocessing)
-        
-        model_inputs = { self.model.input_names[0]: processed_numeric_ohe }
-        for i, feature_name in enumerate(embedding_features):
-            model_input_name = self.model.input_names[i + 1] 
-            model_inputs[model_input_name] = tf.constant(df[feature_name].fillna('').values, dtype=tf.string)
-            
-        return model_inputs
-
-    def get_ui_data_for_result_window(self, data):
-        def get_val(key, default=0): return data.get(key, default) if not pd.isna(data.get(key)) else default
-        gonggeup = get_val('공급면적(㎡)', 1)
-        return {
-            'district': get_val('지역', 'N/A'),
-            'subway_nearby': get_val('지하철 - 반경 1.5km 이내') > 0,
-            'bus_stop': get_val('버스 - 반경 500m 이내') > 0,
-            'facilities_count': get_val('편의점 - 500m 이내') + get_val('대형마트 - 1.5km 이내'),
-            'park_nearby': get_val('공원 - 1.5km 이내') > 0,
-            'avg_area': get_val('전용면적(㎡)') / 3.3058,
-            'avg_price_per_area': (get_val('분양가(만원)') / (gonggeup / 3.3058)),
-            'elementary_school': get_val('초등학교(2km 이내)') > 0,
-            'middle_school': get_val('중학교(2km 이내)') > 0,
-            'high_school': get_val('고등학교(2km 이내)') > 0,
-            'hospital_nearby': get_val('상급병원 - 1.5km 이내') > 0,
-            'interest_rate': get_val('금리'), 'exchange_rate': get_val('환율'),
-            'nearby_avg_price': (get_val('주변시세 평균(만원)') / (gonggeup / 3.3058)),
-        }
-
-    def determine_grade_and_status(self, rate):
-        if rate >= 75: return "우수", "매우 안정"
-        if rate >= 60: return "양호", "안정"
-        if rate >= 45: return "보통", "주의"
-        return "미흡", "위험"
-        
-    def show_simple_result(self, project, rate, grade, status):
-        msg = f"'{project}' 예측 결과:\n\n- 예상 분양률: {rate:.2f}%\n- 등급: {grade}\n- 상태: {status}"
-        self.show_message_box("예측 완료", msg, QMessageBox.Information)
-
-    def clear_inputs(self):
-        for widget in self.inputs.values():
-            if isinstance(widget, QLineEdit): widget.clear()
-            elif isinstance(widget, QComboBox): widget.setCurrentIndex(0)
-    
-    def center_window(self):
-        screen_rect = QApplication.desktop().screenGeometry()
-        self.move((screen_rect.width() - self.width()) // 2, (screen_rect.height() - self.height()) // 2)
-
-    def show_message_box(self, title, message, icon):
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle(title)
-        msg_box.setText(message)
-        msg_box.setIcon(icon)
-        msg_box.setStyleSheet("QLabel{min-width: 300px; font-size: 11px;}");
-        msg_box.exec_()
-    
-    def get_line_edit_style(self):
-        return """
-            QLineEdit {
-                border: 1px solid #d1d9e0; border-radius: 6px; padding: 8px 12px;
-                font-size: 11px; color: #2c3e50; background-color: white;
-            }
-            QLineEdit:focus { border: 2px solid #667eea; background-color: #f8f9ff; }
-            QLineEdit:hover { border: 1px solid #667eea; }
-        """
-
-    def get_combo_style(self):
-        return """
-            QComboBox {
-                border: 1px solid #d1d9e0; border-radius: 6px; padding: 8px 12px;
-                font-size: 11px; color: #2c3e50; background-color: white;
-            }
-            QComboBox:hover { border: 1px solid #667eea; }
-        """
-        
-    def get_button_style(self, bg, hover_bg):
-        return f"""
-            QPushButton {{ 
-                background-color: {bg}; color: white; border: none; 
-                border-radius: 22px; padding: 12px 20px; font-weight: bold; 
-            }}
-            QPushButton:hover {{ background-color: {hover_bg}; }}
-        """
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     app = QApplication(sys.argv)
-    window = VacancyPredictorWindow()
-    if hasattr(window, 'model') and window.model:
-        window.show()
-        sys.exit(app.exec_())
+    if initialize_models_and_data():
+        window = VacancyPredictorWindow(); window.show(); sys.exit(app.exec_())
