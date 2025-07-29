@@ -1,0 +1,10 @@
+{
+  "trained_date": "2025-07-16T09:36:39.069438",
+  "n_features": 20,
+  "n_samples": 70276,
+  "target_distribution": {
+    "0": 68223,
+    "1": 2053
+  },
+  "optimal_threshold": 0.9843
+}
