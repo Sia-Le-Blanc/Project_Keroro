@@ -4,24 +4,52 @@ import sys, os, json
 from datetime import datetime
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont, QDoubleValidator
+from PyQt5.QtGui import QFont, QDoubleValidator, QCursor, QIcon # QIcon 추가
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+class SearchableComboBox(QComboBox):
+    def __init__(self, items=None, parent=None):
+        super().__init__(parent)
+        self._items = items if items is not None else []
+        self.setEditable(True); self.setInsertPolicy(QComboBox.NoInsert)
+        
+        # 한글 입력 문제 해결을 위한 설정
+        self.setInputMethodHints(Qt.ImhNone)
+        self.setAttribute(Qt.WA_InputMethodEnabled, True)
+        
+        self.completer = QCompleter(self._items, self); self.completer.setFilterMode(Qt.MatchContains); self.completer.setCaseSensitivity(Qt.CaseInsensitive); self.setCompleter(self.completer)
+        self.updateItems(self._items); self.activated.connect(self._on_item_selected)
+    def updateItems(self, new_items):
+        self._items = new_items if new_items is not None else []
+        self.clear(); self.addItems(["-- 기록에서 회사 선택 --"] + self._items); self.completer.model().setStringList(self._items)
+        self._last_valid_text = self.itemText(0); self.setCurrentIndex(0)
+    def _on_item_selected(self, index): self._last_valid_text = self.itemText(index)
+    def focusOutEvent(self, event):
+        all_valid_items = ["-- 기록에서 회사 선택 --"] + self._items
+        if self.currentText() not in all_valid_items: self.setCurrentText(self._last_valid_text)
+        super().focusOutEvent(event)
 
 class RiskPredictorWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("🏢 기업 부도 예측"); self.setMinimumSize(900, 700); self.resize(1000, 800)
-        self.font_name = "Apple SD Gothic Neo" if sys.platform == "darwin" else "Malgun Gothic"
-        self.setFont(QFont(self.font_name))
-        # UI 스타일 통합 관리
+        self.setWindowTitle("🏢 기업 부도 예측")
+
+        # --- 아이콘 설정 코드 추가 ---
+        icon_path = os.path.join(BASE_DIR, 'image.png')
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        # --------------------------
+
+        self.setMinimumSize(950, 750); self.resize(1050, 850)  # 윈도우용 크기 증가
+        self.font_name = "Apple SD Gothic Neo" if sys.platform == "darwin" else "Malgun Gothic"; self.setFont(QFont(self.font_name))
         self.setStyleSheet(f"""
             QWidget {{ background-color: #f5f7fa; font-family: '{self.font_name}'; color: #2c3e50; }}
-            QGroupBox {{ font-weight: bold; border: 1px solid #d1d9e0; border-radius: 10px; margin-top: 12px; padding: 25px 15px 15px 15px; background-color: #f8f9fb; }}
-            QGroupBox::title {{ subcontrol-origin: margin; left: 15px; padding: 0 8px; }}
-            QLineEdit, QComboBox {{ border: 1px solid #d1d9e0; border-radius: 6px; padding: 0 12px; background-color: white; min-height: 38px; }}
+            QGroupBox {{ font-weight: bold; border: 1px solid #d1d9e0; border-radius: 10px; margin-top: 15px; padding: 28px 18px 18px 18px; background-color: #f8f9fb; }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: 18px; padding: 0 10px; }}
+            QLineEdit, QComboBox {{ border: 1px solid #d1d9e0; border-radius: 6px; padding: 0 15px; background-color: white; min-height: 42px; }}
             QLineEdit:focus, QComboBox:focus {{ border: 2px solid #667eea; }}
-            QPushButton {{ border: none; border-radius: 8px; font-weight: bold; padding: 10px; }}
+            QPushButton {{ border: none; border-radius: 8px; font-weight: bold; padding: 12px; }}
         """)
         self.log_file = os.path.join(BASE_DIR, "prediction_log.json")
         self.feature_groups = {
@@ -36,60 +64,71 @@ class RiskPredictorWindow(QWidget):
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(25, 25, 25, 25); main_layout.setSpacing(15)
+        main_layout.setContentsMargins(30, 30, 30, 30); main_layout.setSpacing(18)  # 여백과 간격 증가
         main_layout.addWidget(self.create_header())
         main_layout.addWidget(self.create_company_section())
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True); scroll_area.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
+        scroll_area = QScrollArea(); scroll_area.setWidgetResizable(True); scroll_area.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
         scroll_content = QWidget(); scroll_content.setStyleSheet("background-color: white; border-radius: 12px; border: 1px solid #e1e8ed;")
         content_layout = QVBoxLayout(scroll_content)
-        content_layout.setContentsMargins(20, 20, 20, 20); content_layout.setSpacing(20)
+        content_layout.setContentsMargins(25, 25, 25, 25); content_layout.setSpacing(22)  # 여백과 간격 증가
         for group_name, features in self.feature_groups.items(): content_layout.addWidget(self.create_feature_group(group_name, features))
         scroll_area.setWidget(scroll_content); main_layout.addWidget(scroll_area, 1)
         main_layout.addLayout(self.create_bottom_buttons())
 
     def create_header(self):
-        header = QFrame(); header.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #e74c3c, stop:1 #c0392b); border-radius: 8px; padding: 20px;")
+        header = QFrame(); header.setFixedHeight(110)  # 높이 증가
+        header.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #e74c3c, stop:1 #c0392b); border-radius: 8px; padding: 0;")
         layout = QVBoxLayout(header); layout.setAlignment(Qt.AlignCenter)
-        title = QLabel("🏢 기업 부도 위험 예측"); title.setFont(QFont(self.font_name, 18, QFont.Bold))
-        subtitle = QLabel("기업의 재무 데이터를 입력하여 부도 위험도를 분석합니다"); subtitle.setFont(QFont(self.font_name, 11))
+        title = QLabel("🏢 기업 부도 위험 예측"); title.setFont(QFont(self.font_name, 20, QFont.Bold))  # 폰트 크기 증가
+        subtitle = QLabel("기업의 재무 데이터를 입력하여 부도 위험도를 분석합니다"); subtitle.setFont(QFont(self.font_name, 12))  # 폰트 크기 증가
         for label in [title, subtitle]:
             label.setStyleSheet("color: #ffffff; background: transparent;"); label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title); layout.addWidget(subtitle)
         return header
 
     def create_company_section(self):
-        section = QFrame(); section.setStyleSheet("background-color: white; border-radius: 12px; border: 1px solid #e1e8ed; padding: 20px;")
-        layout = QGridLayout(section); layout.setSpacing(15)
+        section = QFrame(); section.setStyleSheet("background-color: white; border-radius: 12px; border: 1px solid #e1e8ed; padding: 18px 25px;")  # 패딩 증가
+        layout = QGridLayout(section); layout.setSpacing(12)  # 간격 증가
         company_label = QLabel("🏢 분석 대상 회사명:"); self.company_name_input = QLineEdit(); self.company_name_input.setPlaceholderText("회사명을 입력하세요")
-        history_label = QLabel("📋 이전 기록 선택:"); self.company_history_combo = QComboBox()
-        load_btn = QPushButton("📂 불러오기"); load_btn.clicked.connect(self.load_selected_company_data)
-        load_btn.setStyleSheet("background-color: #f39c12; color: white;")
-        for widget in [company_label, history_label]: widget.setFont(QFont(self.font_name, 11, QFont.Bold))
+        
+        # 한글 입력 문제 해결을 위한 설정
+        self.company_name_input.setInputMethodHints(Qt.ImhNone)
+        self.company_name_input.setAttribute(Qt.WA_InputMethodEnabled, True)
+        
+        history_label = QLabel("📋 이전 기록 선택:"); self.company_history_combo = SearchableComboBox() # SearchableComboBox로 교체
+        load_btn = QPushButton("📂 불러오기"); load_btn.clicked.connect(self.load_selected_company_data); load_btn.setStyleSheet("background-color: #f39c12; color: white;")
+        load_btn.setMinimumWidth(100)  # 버튼 최소 너비 설정
+        for widget in [company_label, history_label]: widget.setFont(QFont(self.font_name, 12, QFont.Bold))  # 폰트 크기 증가
         layout.addWidget(company_label, 0, 0); layout.addWidget(self.company_name_input, 0, 1, 1, 2)
         layout.addWidget(history_label, 1, 0); layout.addWidget(self.company_history_combo, 1, 1); layout.addWidget(load_btn, 1, 2)
         return section
 
     def create_feature_group(self, group_name, features):
-        group_box = QGroupBox(group_name); group_box.setFont(QFont(self.font_name, 12, QFont.Bold))
-        grid = QGridLayout(group_box); grid.setSpacing(12)
+        group_box = QGroupBox(group_name); group_box.setFont(QFont(self.font_name, 13, QFont.Bold))  # 폰트 크기 증가
+        grid = QGridLayout(group_box); grid.setSpacing(15)  # 간격 증가
         for i, feature in enumerate(features):
             label = QLabel(self.get_feature_display_name(feature)); line_edit = QLineEdit("0")
+            label.setFont(QFont(self.font_name, 10))  # 레이블 폰트 크기 설정
+            
+            # 한글 입력 문제 해결을 위한 설정
+            line_edit.setInputMethodHints(Qt.ImhNone)
+            line_edit.setAttribute(Qt.WA_InputMethodEnabled, True)
+            
             line_edit.setValidator(QDoubleValidator()); self.inputs[feature] = line_edit
             row, col = i // 2, (i % 2) * 2
             grid.addWidget(label, row, col); grid.addWidget(line_edit, row, col + 1)
         return group_box
 
     def create_bottom_buttons(self):
-        layout = QHBoxLayout(); layout.setSpacing(10)
-        help_btn = QPushButton("❓ 도움말"); help_btn.clicked.connect(self.open_help_dialog)
-        help_btn.setStyleSheet("background-color: #27ae60; color: white;")
-        reset_btn = QPushButton("🔄 초기화"); reset_btn.clicked.connect(self.clear_all_inputs)
-        reset_btn.setStyleSheet("background-color: #95a5a6; color: white;")
-        submit_btn = QPushButton("🔍 예측 실행"); submit_btn.clicked.connect(self.predict_bankruptcy)
-        submit_btn.setStyleSheet("background-color: #e74c3c; color: white;")
+        layout = QHBoxLayout(); layout.setSpacing(12)  # 간격 증가
+        help_btn = QPushButton("❓ 도움말"); help_btn.clicked.connect(self.open_help_dialog); help_btn.setStyleSheet("background-color: #27ae60; color: white;")
+        reset_btn = QPushButton("🔄 초기화"); reset_btn.clicked.connect(self.clear_all_inputs); reset_btn.setStyleSheet("background-color: #95a5a6; color: white;")
+        submit_btn = QPushButton("🔍 예측 실행"); submit_btn.clicked.connect(self.predict_bankruptcy); submit_btn.setStyleSheet("background-color: #e74c3c; color: white;")
         layout.addWidget(help_btn); layout.addStretch(); layout.addWidget(reset_btn); layout.addWidget(submit_btn)
-        for btn in [help_btn, reset_btn, submit_btn]: btn.setMinimumHeight(45)
+        for btn in [help_btn, reset_btn, submit_btn]: 
+            btn.setMinimumHeight(48)  # 버튼 높이 증가
+            btn.setMinimumWidth(120)  # 버튼 최소 너비 설정
+            btn.setFont(QFont(self.font_name, 11, QFont.Bold))  # 버튼 폰트 크기 증가
         return layout
 
     def predict_bankruptcy(self):
@@ -145,13 +184,13 @@ class RiskPredictorWindow(QWidget):
         self.load_company_history()
 
     def load_company_history(self):
-        current_selection = self.company_history_combo.currentText(); self.company_history_combo.clear(); self.company_history_combo.addItem("-- 기록에서 회사 선택 --")
-        if not os.path.exists(self.log_file): return
+        if not os.path.exists(self.log_file):
+            self.company_history_combo.updateItems([]) # 항목 업데이트
+            return
         try:
             with open(self.log_file, 'r', encoding='utf-8') as f: logs = json.load(f)
-            for company in sorted(logs.keys()): self.company_history_combo.addItem(company)
-            index = self.company_history_combo.findText(current_selection)
-            if index != -1: self.company_history_combo.setCurrentIndex(index)
+            company_names = sorted(logs.keys())
+            self.company_history_combo.updateItems(company_names) # 항목 업데이트
         except Exception as e: print(f"회사 기록 로드 오류: {e}")
 
     def load_selected_company_data(self):
@@ -174,7 +213,4 @@ class RiskPredictorWindow(QWidget):
     def center_window(self): qr = self.frameGeometry(); cp = QDesktopWidget().availableGeometry().center(); qr.moveCenter(cp); self.move(qr.topLeft())
     def show_message_box(self, title, message, icon):
         msg_box = QMessageBox(self); msg_box.setWindowTitle(title); msg_box.setText(message); msg_box.setIcon(icon)
-        msg_box.setFont(QFont(self.font_name, 10)); msg_box.setStyleSheet("QLabel{min-width: 300px;}"); msg_box.exec_()
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv); window = RiskPredictorWindow(); window.show(); sys.exit(app.exec_())
+        msg_box.setFont(QFont(self.font_name, 11)); msg_box.setStyleSheet("QLabel{min-width: 320px;}"); msg_box.exec_()  # 폰트 크기 및 창 크기 증가

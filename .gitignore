@@ -17,3 +17,5 @@ venv/                # 가상환경 폴더 (필요 시)
 Codes/day3/images/
 
 .ipynb_checkpoints
+*.docx
+*.pptx
