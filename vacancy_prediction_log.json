@@ -1,0 +1,29 @@
+{
+  "래미안 강남": [
+    {
+      "timestamp": "2025-07-16T17:04:08.919515",
+      "input_data": {
+        "road_count": 4.0,
+        "facilities_count": 4.0,
+        "avg_area": 32.0,
+        "avg_price_per_area": 20000.0,
+        "interest_rate": 3.5,
+        "exchange_rate": 1250.0,
+        "nearby_avg_price": 20000.0,
+        "subway_nearby": true,
+        "bus_stop": true,
+        "park_nearby": true,
+        "elementary_school": true,
+        "middle_school": true,
+        "high_school": true,
+        "hospital_nearby": true,
+        "district": "강남구"
+      },
+      "prediction_result": {
+        "vacancy_rate": 85.5,
+        "grade": "우수",
+        "status": "매우 안정"
+      }
+    }
+  ]
+}
